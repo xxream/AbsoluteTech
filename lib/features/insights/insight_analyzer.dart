@@ -20,8 +20,15 @@ class InsightAnalyzer {
     int stepThreshold = 8000,
     int minimumDaysPerCohort = 5,
   }) {
-    final activeDays = days.where((day) => day.steps >= stepThreshold).toList();
-    final otherDays = days.where((day) => day.steps < stepThreshold).toList();
+    final comparableDays = days
+        .where((day) => day.steps != null && day.sleepMinutes != null)
+        .toList();
+    final activeDays = comparableDays
+        .where((day) => day.steps! >= stepThreshold)
+        .toList();
+    final otherDays = comparableDays
+        .where((day) => day.steps! < stepThreshold)
+        .toList();
 
     if (activeDays.length < minimumDaysPerCohort ||
         otherDays.length < minimumDaysPerCohort) {
@@ -47,12 +54,12 @@ class InsightAnalyzer {
     return HealthInsight(
       title: 'Sleep on higher-step days',
       description: description,
-      sampleSize: days.length,
+      sampleSize: comparableDays.length,
     );
   }
 
   double _averageSleep(List<DailyHealthSummary> days) {
-    return days.fold<int>(0, (total, day) => total + day.sleepMinutes) /
+    return days.fold<int>(0, (total, day) => total + day.sleepMinutes!) /
         days.length;
   }
 }

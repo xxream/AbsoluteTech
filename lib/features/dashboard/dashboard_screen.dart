@@ -7,10 +7,8 @@ import '../insights/insight_analyzer.dart';
 enum DashboardRange { day, week, month }
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({
-    super.key,
-    this.repository = const DemoHealthDataRepository(),
-  });
+  DashboardScreen({super.key, HealthDataRepository? repository})
+    : repository = repository ?? PlatformHealthDataRepository();
 
   final HealthDataRepository repository;
 
@@ -20,44 +18,85 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   DashboardRange _range = DashboardRange.week;
+  HealthAccessStatus? _access;
+  List<DailyHealthSummary> _allDays = const [];
+  bool _loading = true;
+  bool _authorizationRequested = false;
+  String? _error;
 
-  List<DailyHealthSummary> _visibleDays(List<DailyHealthSummary> allDays) {
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh({
+    bool requestAccess = false,
+    bool installHealthConnect = false,
+  }) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      if (installHealthConnect) {
+        await widget.repository.installHealthConnect();
+      }
+
+      final access = requestAccess
+          ? await widget.repository.requestAccess()
+          : await widget.repository.checkAccess();
+      final days = access.providerAvailable
+          ? await widget.repository.loadRecentSummaries(access)
+          : const <DailyHealthSummary>[];
+
+      if (!mounted) return;
+      setState(() {
+        _access = access;
+        _allDays = days;
+        _authorizationRequested |= requestAccess;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Could not read health data: $error';
+        _loading = false;
+      });
+    }
+  }
+
+  List<DailyHealthSummary> get _visibleDays {
     final count = switch (_range) {
       DashboardRange.day => 1,
       DashboardRange.week => 7,
       DashboardRange.month => 30,
     };
-    return allDays.reversed.take(count).toList().reversed.toList();
+    return _allDays.reversed.take(count).toList().reversed.toList();
   }
 
   @override
   Widget build(BuildContext context) {
-    final allDays = widget.repository.loadRecentSummaries();
-    if (allDays.isEmpty) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Health Insights')),
-        body: const Center(
-          child: Text('No health data is available for this view yet.'),
-        ),
-      );
-    }
-
-    final days = _visibleDays(allDays);
-    final latest = allDays.last;
-    final averageSteps =
-        days.fold<int>(0, (sum, day) => sum + day.steps) ~/ days.length;
-    final averageSleep =
-        days.fold<int>(0, (sum, day) => sum + day.sleepMinutes) ~/ days.length;
-    final insight = const InsightAnalyzer().compareSleepByStepCount(allDays);
+    final days = _visibleDays;
+    final steps = _average(days.map((day) => day.steps).whereType<int>());
+    final sleep = _average(
+      days.map((day) => day.sleepMinutes).whereType<int>(),
+    );
+    final latestHeartRate = days.reversed
+        .map((day) => day.restingHeartRate)
+        .whereType<double>()
+        .firstOrNull;
+    final insight = const InsightAnalyzer().compareSleepByStepCount(_allDays);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Health Insights'),
         actions: [
           IconButton(
-            tooltip: 'Data sources',
-            onPressed: () => _showDemoNotice(context),
-            icon: const Icon(Icons.health_and_safety_outlined),
+            tooltip: 'Refresh health data',
+            onPressed: _loading ? null : () => _refresh(),
+            icon: const Icon(Icons.refresh),
           ),
         ],
       ),
@@ -67,17 +106,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             Text(
               'Your health, at a glance',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 6),
             Text(
-              'A private view of your recorded activity and rest.',
+              'Your records, read directly from your health app.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
+            const SizedBox(height: 18),
+            _ConnectionCard(
+              access: _access,
+              days: _allDays,
+              loading: _loading,
+              authorizationRequested: _authorizationRequested,
+              onConnect: () => _refresh(requestAccess: true),
+              onInstallHealthConnect: () =>
+                  _refresh(installHealthConnect: true),
+            ),
+            if (_error case final error?) ...[
+              const SizedBox(height: 12),
+              _ErrorCard(message: error),
+            ],
             const SizedBox(height: 20),
             _RangeSelector(
               value: _range,
@@ -85,10 +138,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(height: 16),
             _ActivityCard(
-              averageSteps: averageSteps,
+              averageSteps: steps,
               targetSteps: 10000,
               days: days,
               rangeLabel: _rangeLabel(_range),
+              caption: _metricCaption(
+                access: _access,
+                permission: _access?.stepsAuthorized,
+                hasData: steps != null,
+              ),
             ),
             const SizedBox(height: 12),
             Row(
@@ -97,8 +155,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _MetricCard(
                     icon: Icons.bedtime_outlined,
                     label: 'Average sleep',
-                    value: _formatDuration(averageSleep),
-                    caption: _rangeLabel(_range),
+                    value: sleep == null ? '--' : _formatDuration(sleep),
+                    caption: _metricCaption(
+                      access: _access,
+                      permission: _access?.sleepAuthorized,
+                      hasData: sleep != null,
+                    ),
                     color: const Color(0xFF6250A4),
                   ),
                 ),
@@ -107,8 +169,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _MetricCard(
                     icon: Icons.favorite_border,
                     label: 'Resting heart rate',
-                    value: '${latest.restingHeartRate} bpm',
-                    caption: 'Latest recorded',
+                    value: latestHeartRate == null
+                        ? '--'
+                        : '${latestHeartRate.round()} bpm',
+                    caption: _metricCaption(
+                      access: _access,
+                      permission: _access?.restingHeartRateAuthorized,
+                      hasData: latestHeartRate != null,
+                    ),
                     color: const Color(0xFFB84450),
                   ),
                 ),
@@ -117,9 +185,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(height: 20),
             Text(
               'Patterns',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 10),
             if (insight case final insight?)
@@ -127,11 +195,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
             else
               const _EmptyInsightCard(),
             const SizedBox(height: 16),
-            const _DemoDataBanner(),
+            const _PrivacyNote(),
           ],
         ),
       ),
     );
+  }
+
+  static int? _average(Iterable<int> values) {
+    final list = values.toList();
+    if (list.isEmpty) return null;
+    return list.reduce((first, second) => first + second) ~/ list.length;
+  }
+
+  String _metricCaption({
+    required HealthAccessStatus? access,
+    required bool? permission,
+    required bool hasData,
+  }) {
+    if (hasData) return _rangeLabel(_range);
+    if (_loading) return 'Loading health data';
+    if (access == null) return 'Connect a health app';
+    if (!access.providerAvailable) return 'Health app unavailable';
+    if (access.platform == HealthPlatform.android && permission == false) {
+      return 'Permission not granted';
+    }
+    if (access.platform == HealthPlatform.ios) {
+      return 'No data shared with this app';
+    }
+    return 'No recorded data';
   }
 
   static String _formatDuration(int minutes) {
@@ -141,17 +233,165 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   static String _rangeLabel(DashboardRange range) => switch (range) {
-        DashboardRange.day => 'Today',
-        DashboardRange.week => '7-day average',
-        DashboardRange.month => '30-day average',
-      };
+    DashboardRange.day => 'Today',
+    DashboardRange.week => '7-day average',
+    DashboardRange.month => '30-day average',
+  };
+}
 
-  static void _showDemoNotice(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content:
-            Text('Health Connect and HealthKit setup is not connected yet.'),
+class _ConnectionCard extends StatelessWidget {
+  const _ConnectionCard({
+    required this.access,
+    required this.days,
+    required this.loading,
+    required this.authorizationRequested,
+    required this.onConnect,
+    required this.onInstallHealthConnect,
+  });
+
+  final HealthAccessStatus? access;
+  final List<DailyHealthSummary> days;
+  final bool loading;
+  final bool authorizationRequested;
+  final VoidCallback onConnect;
+  final VoidCallback onInstallHealthConnect;
+
+  bool get _hasData => days.any(
+    (day) =>
+        day.steps != null ||
+        day.sleepMinutes != null ||
+        day.restingHeartRate != null,
+  );
+
+  String get _title {
+    if (access == null) return 'Checking health data access';
+    if (!access!.providerAvailable) {
+      return access!.platform == HealthPlatform.android
+          ? 'Health Connect is unavailable'
+          : 'Health data is unavailable';
+    }
+    if (access!.platform == HealthPlatform.ios) {
+      if (_hasData) return 'Apple Health data is available';
+      return authorizationRequested
+          ? 'Apple Health access was requested'
+          : 'Connect Apple Health';
+    }
+    if (access!.hasAnyAndroidPermission) return 'Health Connect is connected';
+    return 'Connect Health Connect';
+  }
+
+  String get _description {
+    if (access == null) return 'Checking permissions on this device.';
+    if (!access!.providerAvailable) {
+      return 'Install or update Health Connect, then try connecting again.';
+    }
+    if (access!.platform == HealthPlatform.ios) {
+      if (_hasData) {
+        return 'These records are read directly from Apple Health on this device.';
+      }
+      if (authorizationRequested) {
+        return 'Apple does not tell apps whether read access was denied. '
+            'If no values appear, enable Steps, Sleep, and Heart Rate for '
+            'Health Insights in iPhone Settings > Health.';
+      }
+      return 'Choose which Steps, Sleep, and Resting Heart Rate records '
+          'Health Insights may read.';
+    }
+    if (!access!.hasAnyAndroidPermission) {
+      return 'Choose which Steps, Sleep, and Resting Heart Rate records '
+          'Health Insights may read.';
+    }
+    if (access!.stepsAuthorized == true &&
+        !access!.activityRecognitionGranted) {
+      return 'Activity recognition is disabled. Steps may be unavailable; '
+          'other granted health data can still appear.';
+    }
+    return 'Records are read from Health Connect on this device. '
+        'Only metrics you allow are shown.';
+  }
+
+  String get _buttonLabel {
+    if (access?.platform == HealthPlatform.android &&
+        access?.providerAvailable == false) {
+      return 'Install or update Health Connect';
+    }
+    if (access?.platform == HealthPlatform.ios) {
+      return authorizationRequested
+          ? 'Refresh health data'
+          : 'Connect Apple Health';
+    }
+    if (access?.hasAnyAndroidPermission == true) {
+      return 'Refresh health data';
+    }
+    return 'Connect Health Connect';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Card(
+      color: colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.health_and_safety_outlined,
+                  color: colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _title,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (loading)
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(_description),
+            if (access?.providerAvailable != false ||
+                access?.platform == HealthPlatform.android) ...[
+              const SizedBox(height: 12),
+              FilledButton.tonal(
+                onPressed: loading
+                    ? null
+                    : access?.platform == HealthPlatform.android &&
+                          access?.providerAvailable == false
+                    ? onInstallHealthConnect
+                    : onConnect,
+                child: Text(_buttonLabel),
+              ),
+            ],
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _ErrorCard extends StatelessWidget {
+  const _ErrorCard({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(padding: const EdgeInsets.all(14), child: Text(message)),
     );
   }
 }
@@ -182,16 +422,20 @@ class _ActivityCard extends StatelessWidget {
     required this.targetSteps,
     required this.days,
     required this.rangeLabel,
+    required this.caption,
   });
 
-  final int averageSteps;
+  final int? averageSteps;
   final int targetSteps;
   final List<DailyHealthSummary> days;
   final String rangeLabel;
+  final String caption;
 
   @override
   Widget build(BuildContext context) {
-    final progress = (averageSteps / targetSteps).clamp(0.0, 1.0);
+    final progress = averageSteps == null
+        ? 0.0
+        : (averageSteps! / targetSteps).clamp(0.0, 1.0);
     final colorScheme = Theme.of(context).colorScheme;
 
     return Card(
@@ -207,8 +451,8 @@ class _ActivityCard extends StatelessWidget {
                 Text(
                   'Steps',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 const Spacer(),
                 Text(rangeLabel),
@@ -216,13 +460,17 @@ class _ActivityCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              averageSteps.toString(),
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              averageSteps?.toString() ?? '--',
+              style: Theme.of(
+                context,
+              ).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 4),
-            Text('Average per day · goal $targetSteps'),
+            Text(
+              averageSteps == null
+                  ? caption
+                  : 'Average per day · goal $targetSteps · $caption',
+            ),
             const SizedBox(height: 14),
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
@@ -233,10 +481,7 @@ class _ActivityCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            SizedBox(
-              height: 72,
-              child: _StepsBars(days: days),
-            ),
+            SizedBox(height: 72, child: _StepsBars(days: days)),
           ],
         ),
       ),
@@ -252,7 +497,7 @@ class _StepsBars extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final maxSteps = days
-        .map((day) => day.steps)
+        .map((day) => day.steps ?? 0)
         .fold<int>(1, (maximum, steps) => steps > maximum ? steps : maximum);
     final color = Theme.of(context).colorScheme.primary;
 
@@ -264,20 +509,28 @@ class _StepsBars extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 3),
               child: Tooltip(
-                message: '${day.steps} steps',
+                message: day.steps == null
+                    ? 'No step data for day ${index + 1}'
+                    : '${day.steps} steps',
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: color.withValues(
-                      alpha: day.steps / maxSteps < 0.5 ? 0.35 : 0.8,
-                    ),
+                    color: day.steps == null
+                        ? color.withValues(alpha: 0.12)
+                        : color.withValues(
+                            alpha: day.steps! / maxSteps < 0.5 ? 0.35 : 0.8,
+                          ),
                     borderRadius: const BorderRadius.vertical(
                       top: Radius.circular(4),
                     ),
                   ),
                   child: SizedBox(
-                    height: 16 + (day.steps / maxSteps * 50),
+                    height: day.steps == null
+                        ? 2
+                        : 16 + (day.steps! / maxSteps * 50),
                     child: Semantics(
-                      label: 'Day ${index + 1}: ${day.steps} steps',
+                      label: day.steps == null
+                          ? 'No step data for day ${index + 1}'
+                          : 'Day ${index + 1}: ${day.steps} steps',
                       child: const SizedBox.expand(),
                     ),
                   ),
@@ -322,17 +575,17 @@ class _MetricCard extends StatelessWidget {
               fit: BoxFit.scaleDown,
               child: Text(
                 value,
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
               ),
             ),
             const SizedBox(height: 2),
             Text(
               caption,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -365,8 +618,8 @@ class _InsightCard extends StatelessWidget {
                   child: Text(
                     insight.title,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -377,8 +630,8 @@ class _InsightCard extends StatelessWidget {
             Text(
               '${insight.sampleSize} days included · Descriptive comparison',
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -396,31 +649,32 @@ class _EmptyInsightCard extends StatelessWidget {
       child: Padding(
         padding: EdgeInsets.all(18),
         child: Text(
-          'More recorded days are needed before a pattern can be compared.',
+          'More recorded days with both steps and sleep data are needed '
+          'before a pattern can be compared.',
         ),
       ),
     );
   }
 }
 
-class _DemoDataBanner extends StatelessWidget {
-  const _DemoDataBanner();
+class _PrivacyNote extends StatelessWidget {
+  const _PrivacyNote();
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      color: Theme.of(context).colorScheme.secondaryContainer,
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: const Padding(
         padding: EdgeInsets.all(14),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.science_outlined),
+            Icon(Icons.lock_outline),
             SizedBox(width: 10),
             Expanded(
               child: Text(
-                'Prototype data only. No health records are read or stored. '
-                'Connect Health Connect or HealthKit in a later milestone.',
+                'Health records are read from the platform health app. '
+                'This prototype does not upload or persist them.',
               ),
             ),
           ],

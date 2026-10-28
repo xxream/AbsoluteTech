@@ -28,7 +28,7 @@ class HealthInsightsApp extends StatelessWidget {
           margin: EdgeInsets.zero,
         ),
       ),
-      home: const DashboardScreen(),
+      home: DashboardScreen(),
     );
   }
 }

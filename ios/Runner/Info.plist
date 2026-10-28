@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Health Insights reads your steps, sleep, and resting heart rate to show your personal trends. Your health records stay on this device.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Health Insights does not write health records to Apple Health.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

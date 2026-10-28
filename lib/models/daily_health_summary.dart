@@ -7,7 +7,7 @@ class DailyHealthSummary {
   });
 
   final DateTime date;
-  final int steps;
-  final int sleepMinutes;
-  final int restingHeartRate;
+  final int? steps;
+  final int? sleepMinutes;
+  final double? restingHeartRate;
 }
