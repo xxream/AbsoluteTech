@@ -175,7 +175,12 @@ behavior must be documented and tested.
 The repository now has a Flutter application scaffold for Android and iOS and a
 synthetic-data dashboard prototype with range selection and a guarded
 descriptive insight calculation. `flutter analyze` and `flutter test` pass.
-Health Connect, HealthKit, local persistence, real charts backed by health
-records, reports, and billing are not connected yet; the native runners have
-not been device-built or validated. Continue through the roadmap above, keeping
+Android debug and release APKs and a release App Bundle have been built
+successfully with Flutter 3.47.8, Android SDK 36, and JDK 21. The Android app
+has not yet been run on a device or emulator. An iOS build cannot be run from
+this Linux host; it requires macOS and Xcode. Health Connect, HealthKit, local
+persistence, real charts backed by health records, reports, and billing are
+not connected yet. Release outputs currently use the scaffold's debug signing
+configuration and are for build verification only; configure a release
+keystore before store distribution. Continue through the roadmap above, keeping
 each phase buildable and tested before adding the next.
